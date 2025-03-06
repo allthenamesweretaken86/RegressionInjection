@@ -13,9 +13,6 @@ httpInjection is a proxy tool built on mitmproxy that intelligently handles HTTP
 
 The system uses scikit-learn's LogisticRegression model to analyze HTTP request patterns and determine which combinations of headers and parameters lead to successful responses.
 
-## Architecture
-
-![Architecture Diagram](https://via.placeholder.com/800x400?text=httpInjection+Architecture)
 
 The system consists of several key components:
 
