@@ -1,10 +1,10 @@
-# httpInjection
+# RegressionInjection
 
 An intelligent HTTP proxy system with machine learning-based request optimization and caching.
 
 ## Overview
 
-httpInjection is a proxy tool built on mitmproxy that intelligently handles HTTP requests with advanced features:
+RegressionInjection is a proxy tool built on mitmproxy that intelligently handles HTTP requests with advanced features:
 
 - **Machine Learning Optimization**: Learns successful request patterns to improve retry success rates
 - **Smart Caching**: Efficiently caches and serves responses to reduce latency and server load
