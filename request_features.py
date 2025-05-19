@@ -1,228 +1,140 @@
-# request_features.py: 
+# request_features.py
 import os
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Optional, Tuple
-from utils import convert_bytes_to_str
+from typing import Dict, Any, Optional, Tuple, List # Ensure List is imported
 import logging
 from dataclasses import dataclass, asdict, fields, MISSING
-from model import ModelManager
 from config import (
-    CACHE_DIR, FAILED_REQUESTS_FILE, MODEL_FILE, 
-    TRAINING_DATA_FILE, MAX_RECORDS, RETRAIN_INTERVAL, MIN_TRAINING_SAMPLES
+    TRAINING_DATA_FILE, MAX_RECORDS, RETRAIN_INTERVAL, MIN_TRAINING_SAMPLES,
+    RATING_SCALE_MIN, RATING_SCALE_MAX
 )
 
 logger = logging.getLogger(__name__)
 
 @dataclass
 class RequestFeatures:
-    """Data class for request features"""
+    """
+    Data class for request and response features for model training.
+    Fields without default values MUST come before fields with default values.
+    """
+    # Fields without default values (Mandatory at instantiation time from mitmproxy flow)
     url: str
-    timestamp: float
+    timestamp: float # Request start time (Unix timestamp)
+    request_method: str
     user_agent: str
-    public_ip: str
-    time_since_last_request: float
-    referrer: str
+    accept: str
     accept_language: str
     accept_encoding: str
-    origin: str
-    content_type: str
-    x_requested_with: str
     connection: str
-    cookies: str
-    x_forwarded_for: str
-    tls_fingerprint: str
-    http_version: str
-    request_method: str
+    host: str
+    origin: str
+    referer: str
     cache_control: str
-    x_custom_headers: str
+    content_type: str # Request's Content-Type header
+    cookies: str # String representation of request cookies
+    sec_fetch_dest: str
+    sec_fetch_mode: str
+    sec_fetch_site: str
+    public_ip: str # Client's public IP address
+    time_since_last_request: float # Seconds, or current_time if first request
+    tls_fingerprint: str # Information about the TLS connection
+    http_version: str # e.g., "HTTP/1.1", "HTTP/2"
+    x_custom_headers: str # JSON string of key-value pairs
+
+    # Fields with default values (Optional or populated later)
+    request_content_length: Optional[int] = None # Content-Length of the request body
+
+    # Response related features (populated after response is received, hence optional/defaulted)
     response_code: Optional[int] = None
-    response_time: Optional[float] = None
-    rating: Optional[int] = None
+    response_time_ms: Optional[float] = None # Duration in milliseconds
+    
+    html_length: Optional[int] = None # Raw length of HTML content from response
+    html_length_score: Optional[float] = None # Score derived from html_length (e.g., 0-2)
+    dominant_html_keyword_score: Optional[float] = None # Direct score (0-10) from a dominant keyword, or NaN
+
+    rating: Optional[float] = None # Overall rating (target variable, 0-10 scale)
+
 
 class RequestFeaturesModel:
+    """Manages the collection, storage, and preparation of training data."""
     def __init__(self):
-        self.model_manager = ModelManager()
-        self.request_count = 0
-        self.last_request_times = {}
-        self.failed_requests_df = pd.DataFrame()
-        self._initialize_dataframes()
-        logger.info("RequestFeaturesModel initialized")
-    def _save_and_retrain(self) -> None:
-        """Save current data and retrain the model"""
-        try:
-            # Save the current data
-            if not self.model_df.empty:
-                self.model_df.to_pickle(TRAINING_DATA_FILE)
-                logger.info("Training data saved successfully")
+        self.request_count_since_last_train = 0
+        self.training_df = self._load_or_initialize_dataframe(TRAINING_DATA_FILE)
+        logger.info(f"RequestFeaturesModel initialized. Training data has {len(self.training_df)} records.")
 
-            # Retrain if we have enough data
-            if len(self.model_df) >= MIN_TRAINING_SAMPLES:
-                metrics = self.model_manager.train(self.model_df)
-                if metrics:
-                    logger.info(f"Model retrained successfully. Metrics: {metrics}")
-                else:
-                    logger.warning("Model retraining failed or insufficient data")
-            else:
-                logger.debug(f"Not enough samples for retraining. Current: {len(self.model_df)}")
+    def _get_expected_columns(self) -> List[str]:
+        """Defines the columns for the training DataFrame based on RequestFeatures dataclass fields."""
+        return [f.name for f in fields(RequestFeatures)]
 
-        except Exception as e:
-            logger.error(f"Error in save and retrain: {e}", exc_info=True)
+    def _load_or_initialize_dataframe(self, file_path: str) -> pd.DataFrame:
+        """Initializes or loads the training DataFrame from a pickle file."""
+        expected_columns = self._get_expected_columns()
+        if os.path.exists(file_path):
+            try:
+                df = pd.read_pickle(file_path)
+                current_cols_set = set(df.columns)
+                expected_cols_set = set(expected_columns)
 
-
-    def update_model(self, features: Dict[str, Any]) -> None:
-        """Update the model with new request features"""
-        try:
-            # Log incoming features for debugging
-            logger.debug(f"Received features type: {type(features)}")
-            logger.debug(f"Received features content: {features}")
-
-            # Validate and prepare features
-            prepared_features = self._prepare_features(features)
-            
-            # Convert to DataFrame row
-            new_data = pd.DataFrame([asdict(prepared_features)])
-            
-            # Ensure all bytes are converted to strings
-            for column in new_data.columns:
-                if new_data[column].dtype == object:
-                    new_data[column] = new_data[column].apply(
-                        lambda x: x.decode() if isinstance(x, bytes) else str(x) if x is not None else None
-                    )
-
-            # Validate data types match RequestFeatures
-            self._validate_datatypes(new_data)
-
-            # Add new data to the model DataFrame
-            self.model_df = pd.concat([self.model_df, new_data], ignore_index=True)
-            
-            # Trim if exceeds max records
-            if len(self.model_df) > MAX_RECORDS:
-                self.model_df = self.model_df.iloc[-MAX_RECORDS:]
-
-            # Log success
-            logger.info("Model updated with new request features")
-            
-            # Save and retrain if needed
-            self.request_count += 1
-            if self.request_count % RETRAIN_INTERVAL == 0:
-                self._save_and_retrain()
-            else:
-                # Just save the data
-                self.model_df.to_pickle(TRAINING_DATA_FILE)
-
-        except Exception as e:
-            logger.error(f"Error updating model: {e}", exc_info=True)
-            raise
-    def _initialize_dataframes(self) -> None:
-        """Initialize or load existing dataframes"""
-        try:
-            # Define expected columns based on RequestFeatures fields
-            expected_columns = list(RequestFeatures.__annotations__.keys())
-            
-            if os.path.exists(TRAINING_DATA_FILE):
-                self.model_df = pd.read_pickle(TRAINING_DATA_FILE)
-                # Validate columns match expected
-                missing_cols = set(expected_columns) - set(self.model_df.columns)
-                if missing_cols:
-                    logger.warning(f"Adding missing columns to model_df: {missing_cols}")
-                    for col in missing_cols:
-                        self.model_df[col] = None
-            else:
-                self.model_df = pd.DataFrame(columns=expected_columns)
-
-            if os.path.exists(FAILED_REQUESTS_FILE):
-                self.failed_requests_df = pd.read_pickle(FAILED_REQUESTS_FILE)
-                # Validate columns match expected
-                missing_cols = set(expected_columns) - set(self.failed_requests_df.columns)
-                if missing_cols:
-                    logger.warning(f"Adding missing columns to failed_requests_df: {missing_cols}")
-                    for col in missing_cols:
-                        self.failed_requests_df[col] = None
-            else:
-                self.failed_requests_df = pd.DataFrame(columns=expected_columns)
-
-        except Exception as e:
-            logger.error(f"Error initializing dataframes: {e}", exc_info=True)
-            self.model_df = pd.DataFrame(columns=expected_columns)
-            self.failed_requests_df = pd.DataFrame(columns=expected_columns)
-    
-
-    def _prepare_features(self, features: Dict[str, Any]) -> RequestFeatures:
-        """Prepare and validate features"""
-        try:
-            if isinstance(features, RequestFeatures):
-                return features
+                for col_name in expected_cols_set - current_cols_set:
+                    df[col_name] = pd.NA 
                 
-            if not isinstance(features, dict):
-                raise TypeError(f"Features must be dict or RequestFeatures, got {type(features)}")
+                cols_to_remove = list(current_cols_set - expected_cols_set)
+                if cols_to_remove:
+                    df = df.drop(columns=cols_to_remove)
+                    logger.info(f"Removed obsolete columns from loaded training data: {cols_to_remove}")
+                
+                df = df[expected_columns]
+                
+                logger.info(f"Loaded training DataFrame from {file_path}, shape {df.shape}. Columns: {df.columns.tolist()}")
+                return df
+            except Exception as e:
+                logger.error(f"Error loading or reconciling DataFrame from {file_path}: {e}. Initializing new one.", exc_info=True)
+        
+        logger.info(f"Initializing new training DataFrame for {file_path} with columns: {expected_columns}")
+        return pd.DataFrame(columns=expected_columns)
 
-            # Ensure all required fields are present
-            required_fields = {f.name for f in fields(RequestFeatures) 
-                             if f.default == MISSING}
-            missing_fields = required_fields - set(features.keys())
-            if missing_fields:
-                raise ValueError(f"Missing required fields: {missing_fields}")
+    def add_request_response_pair(self, features_instance: RequestFeatures, model_manager) -> None:
+        """
+        Adds a new request-response data point to the training set.
+        Triggers model retraining based on configured intervals and data size.
+        """
+        try:
+            new_data_dict = asdict(features_instance)
+            new_data_row = pd.DataFrame([new_data_dict], columns=self._get_expected_columns())
 
-            # Convert bytes to strings and handle None values
-            cleaned_features = {}
-            for key, value in features.items():
-                if isinstance(value, bytes):
-                    cleaned_features[key] = value.decode('utf-8', errors='replace')
-                elif value is None and key not in ['response_code', 'response_time', 'rating']:
-                    cleaned_features[key] = ''  # Default empty string for required string fields
+            self.training_df = pd.concat([self.training_df, new_data_row], ignore_index=True)
+            
+            if len(self.training_df) > MAX_RECORDS:
+                self.training_df = self.training_df.iloc[-MAX_RECORDS:]
+            
+            self._save_dataframe(self.training_df, TRAINING_DATA_FILE)
+            logger.info(f"Added new data point. Training data size: {len(self.training_df)}")
+
+            self.request_count_since_last_train += 1
+            if self.request_count_since_last_train >= RETRAIN_INTERVAL and len(self.training_df) >= MIN_TRAINING_SAMPLES:
+                logger.info(f"Retrain interval ({RETRAIN_INTERVAL}) reached with sufficient samples ({len(self.training_df)}). Triggering model training...")
+                metrics = model_manager.train(self.training_df.copy()) 
+                if metrics:
+                    logger.info(f"Model retraining completed. Metrics: {metrics}")
                 else:
-                    cleaned_features[key] = value
-
-            # Set default values for optional fields if missing
-            for field in ['response_code', 'response_time', 'rating']:
-                if field not in cleaned_features:
-                    cleaned_features[field] = None
-
-            return RequestFeatures(**cleaned_features)
+                    logger.warning("Model retraining was skipped or failed.")
+                self.request_count_since_last_train = 0 
+            elif len(self.training_df) < MIN_TRAINING_SAMPLES:
+                 logger.debug(f"Not enough samples for retraining. Have {len(self.training_df)}, need {MIN_TRAINING_SAMPLES}. Request count since last train: {self.request_count_since_last_train}")
 
         except Exception as e:
-            logger.error(f"Error preparing features: {e}", exc_info=True)
-            raise
+            logger.error(f"Error adding request-response pair to training data: {e}", exc_info=True)
 
-    def _validate_datatypes(self, df: pd.DataFrame) -> None:
-        """Validate DataFrame datatypes match RequestFeatures specifications"""
-        expected_types = {
-            'url': str,
-            'timestamp': float,
-            'user_agent': str,
-            'public_ip': str,
-            'time_since_last_request': float,
-            'referrer': str,
-            'accept_language': str,
-            'accept_encoding': str,
-            'origin': str,
-            'content_type': str,
-            'x_requested_with': str,
-            'connection': str,
-            'cookies': str,
-            'x_forwarded_for': str,
-            'tls_fingerprint': str,
-            'http_version': str,
-            'request_method': str,
-            'cache_control': str,
-            'x_custom_headers': str,
-            'response_code': 'Int64',  # Nullable integer type
-            'response_time': float,
-            'rating': 'Int64'  # Nullable integer type
-        }
+    def _save_dataframe(self, df: pd.DataFrame, file_path: str) -> None:
+        """Saves the DataFrame to a pickle file, ensuring directory exists."""
+        try:
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            df.to_pickle(file_path)
+            logger.debug(f"Training DataFrame successfully saved to {file_path}")
+        except Exception as e:
+            logger.error(f"Error saving training DataFrame to {file_path}: {e}", exc_info=True)
 
-        for col, expected_type in expected_types.items():
-            if col not in df.columns:
-                raise ValueError(f"Missing column: {col}")
-            
-            if expected_type == 'Int64':
-                df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
-            elif expected_type == float:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            else:
-                df[col] = df[col].astype(str)
-
-
-
-    
+    def get_training_data_for_model(self) -> pd.DataFrame:
+        """Provides a copy of the current training data for the ModelManager."""
+        return self.training_df.copy()

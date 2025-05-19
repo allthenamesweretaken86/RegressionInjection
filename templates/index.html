@@ -1,0 +1,521 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RegressionInjection - Management UI</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f0f2f5; color: #333; line-height: 1.6; }
+        .container { max-width: 1200px; margin: 20px auto; padding: 20px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 15px rgba(0,0,0,0.1); }
+        h1, h2, h3 { color: #2c3e50; text-align: center; }
+        h1 { margin-bottom: 30px; font-size: 2.2em; }
+        h2 { margin-top: 30px; margin-bottom: 15px; border-bottom: 2px solid #007bff; padding-bottom: 8px; font-size: 1.6em;}
+        .section { margin-bottom: 25px; padding: 20px; background-color: #fdfdfd; border: 1px solid #e7e7e7; border-radius: 6px; }
+        label { display: block; margin-bottom: 6px; font-weight: 600; color: #555; }
+        input[type="text"], input[type="number"], textarea { width: calc(100% - 22px); padding: 10px; margin-bottom: 12px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-size: 0.95em; }
+        textarea { min-height: 100px; }
+        button { padding: 10px 18px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.95em; transition: background-color 0.3s ease; margin-right:8px; margin-bottom:5px;}
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        .button-success { background-color: #28a745; } .button-success:hover { background-color: #218838; }
+        .button-danger { background-color: #dc3545; } .button-danger:hover { background-color: #c82333; }
+        .button-warning { background-color: #ffc107; color: #212529; } .button-warning:hover { background-color: #e0a800; }
+
+        #keywordsList ul, #logsContainer, #blockListDisplay ul { list-style-type: none; padding: 0; }
+        #keywordsList li, #blockListDisplay li { background-color: #f9f9f9; margin-bottom: 6px; padding: 10px 12px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; border-left: 4px solid #007bff; font-size:0.9em;}
+        #logsContainer { max-height: 500px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background-color: #1e1e1e; color: #d4d4d4; font-size:0.85em;}
+        /* ... (other existing styles for logs, alerts, status indicators, etc. are kept the same) ... */
+        .log-entry { margin-bottom: 6px; padding: 8px; border-radius: 3px; border-left: 4px solid #555; white-space: pre-wrap; font-family: 'Consolas', 'Menlo', 'Courier New', Courier, monospace; word-break: break-all; line-height:1.4;}
+        .log-meta { font-size: 0.9em; color: #888; margin-bottom: 4px; border-bottom: 1px dashed #3a3a3a; padding-bottom: 3px;}
+        .log-meta strong { font-weight: 600;}
+        .log-request { border-left-color: #56b6c2; } .log-request .log-meta strong { color: #56b6c2; }
+        .log-response_processed, .log-success { border-left-color: #67c671; } .log-response_processed .log-meta strong, .log-success .log-meta strong { color: #67c671; }
+        .log-error { border-left-color: #cd3131; } .log-error .log-meta strong { color: #cd3131; } .log-error .log-message {color: #f48771;}
+        .log-warning { border-left-color: #f0ad4e; } .log-warning .log-meta strong { color: #f0ad4e; }
+        .log-info { border-left-color: #5bc0de; } .log-info .log-meta strong { color: #5bc0de; }
+        .log-cache_hit { border-left-color: #4db5ac; } .log-cache_hit .log-meta strong { color: #4db5ac; }
+        .log-cache_miss { border-left-color: #ec971f; } .log-cache_miss .log-meta strong { color: #ec971f; }
+        .log-retry_add_low_rating, .log-retry_add_no_response { border-left-color: #b45fcf; } .log-retry_add_low_rating .log-meta strong, .log-retry_add_no_response .log-meta strong { color: #b45fcf; }
+        .log-system, .log-system_check, .log-system_shutdown { border-left-color: #777; } .log-system .log-meta strong, .log-system_check .log-meta strong, .log-system_shutdown .log-meta strong { color: #999; }
+        .log-mitmproxy_console { border-left-color: #555; color: #aaa; } .log-mitmproxy_console .log-meta strong {color: #888;}
+        .log-dns_block { border-left-color: #8B0000; /* Dark Red */ } .log-dns_block .log-meta strong { color: #8B0000; }
+        .log-blocklist_api, .log-blocklist_init { border-left-color: #4682B4; /* Steel Blue */ } .log-blocklist_api .log-meta strong, .log-blocklist_init .log-meta strong { color: #4682B4; }
+
+        .log-message { margin-top: 3px; }
+        .form-group { margin-bottom: 15px; }
+        .instructions { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-top:12px; border: 1px solid #dee2e6;}
+        .instructions h4 { margin-top: 0; color: #0056b3; font-size: 1.1em;}
+        .instructions ul, .instructions ol { padding-left: 20px; margin-top:5px; margin-bottom:10px; font-size:0.9em;}
+        .instructions code { background-color: #e9ecef; padding: 2px 5px; border-radius: 3px; font-family: 'Courier New', Courier, monospace; border: 1px solid #ced4da; color: #c7254e;}
+        .alert-warning { padding: 12px; background-color: #fff3cd; border: 1px solid #ffeeba; color: #856404; border-radius: 4px; margin-bottom: 15px; font-size:0.9em;}
+        .status-indicator { padding: 6px 12px; border-radius: 4px; color: white; font-weight: bold; display:inline-block; font-size:0.9em;}
+        .status-running { background-color: #28a745; }
+        .status-stopped { background-color: #dc3545; }
+        .status-unknown { background-color: #ffc107; color: #333;}
+        .proxy-controls { margin-bottom:10px;}
+        .proxy-controls button {margin-top:5px;}
+        details { margin-top: 10px; border: 1px solid #ddd; border-radius: 4px; }
+        summary { padding: 10px; font-weight: bold; cursor: pointer; background-color: #f7f7f7; border-radius: 4px 4px 0 0;}
+        details[open] summary { border-bottom: 1px solid #ddd; }
+        details > div { padding: 15px; background-color: #fff; border-top: 1px solid #eee;}
+        .chart-container { width: 90%; max-width: 800px; margin: 20px auto; padding:10px; border: 1px solid #ddd; border-radius: 5px; background-color: #fff;}
+        #blockListDisplay { max-height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin-top: 10px; }
+        #blockListDisplay li span { flex-grow: 1; }
+        #blockListDisplay li button { font-size: 0.8em; padding: 3px 6px; margin-left: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>RegressionInjection - Management UI</h1>
+
+        <div class="section" id="proxyControlSection">
+            <h2>Mitmproxy Control</h2>
+            <p>Status: <span id="mitmproxyStatusIndicator" class="status-indicator status-{{ mitmproxy_status.lower() }}">{{ mitmproxy_status }}</span></p>
+            <div class="proxy-controls">
+                <button id="startProxyButton" onclick="startProxy()">Start Proxy</button>
+                <button id="stopProxyButton" onclick="stopProxy()" class="button-danger">Stop Proxy</button>
+                <button id="refreshStatusButton" onclick="checkProxyStatus()">Refresh Status</button>
+            </div>
+            <p><small>Mitmproxy console output will appear in the 'Live Proxy Log Stream' below.</small></p>
+        </div>
+
+        <div class="section" id="siteStatsSection">
+             <h2>Top Site Statistics</h2>
+             <div class="chart-container"> <canvas id="topSitesChart"></canvas> </div>
+             <div style="text-align:center; margin-top:10px;"> <button onclick="fetchTopSitesStats()">Refresh Stats</button> </div>
+             <p id="statsMessage" style="text-align:center; margin-top:10px;"></p>
+        </div>
+
+        <div class="section" id="certificateSection">
+            <h2>Step 1: Proxy Setup & CA Certificate</h2>
+            <div id="caCertInfo">
+                <p>To intercept HTTPS traffic, your browser/OS must trust the mitmproxy CA certificate.</p>
+                {% if ca_cert_exists %}
+                    <a href="/download-ca-certificate" download="{{ ca_cert_filename }}">
+                        <button class="button-success">Download {{ ca_cert_filename }}</button>
+                    </a>
+                    <p><small>Certificate found at: <code>{{ MITMPROXY_CERT_DIR }}/{{ ca_cert_filename }}</code> on the server.</small></p>
+                {% else %}
+                    <div class="alert-warning">
+                        <strong>CA Certificate Not Found!</strong>
+                         <ol style="margin-top:10px; margin-bottom:0; padding-left:20px;">
+                            <li>The certificate file (<code>{{ ca_cert_filename }}</code>) was not found in the expected directory: <code>{{ MITMPROXY_CERT_DIR }}</code>.</li>
+                            <li><strong>Action:</strong> Click the "Start Proxy" button in the section above. Mitmproxy should automatically generate this certificate file when it starts for the first time with this configuration directory.</li>
+                            <li>After starting the proxy, wait about 5-10 seconds for initialization.</li>
+                            <li>Then, <button onclick="window.location.reload()" style="padding:3px 6px; font-size:0.8em;">Refresh this Page</button>. The download link should appear if the certificate was created.</li>
+                            <li>If the download link still doesn't appear, check the "Live Proxy Log Stream" below for any errors from mitmproxy during startup (e.g., permission issues writing to the certificate directory).</li>
+                        </ol>
+                    </div>
+                {% endif %}
+            </div>
+            <div class="instructions">
+                <h4>Step 2: Configure Your System/Browser to Use the Proxy:</h4>
+                <p>Once mitmproxy is running (see status above), configure your browser or entire system to use the following HTTP/HTTPS proxy settings:</p>
+                <ul>
+                    <li><strong>Proxy Host/Server:</strong> <code>{{ mitmproxy_host }}</code> (or <code>localhost</code> if running on the same machine)</li>
+                    <li><strong>Proxy Port:</strong> <code>{{ mitmproxy_port }}</code></li>
+                </ul>
+                <h4>Step 3: Install the Downloaded Certificate (Crucial Manual Step):</h4>
+                <p>After downloading <code>{{ ca_cert_filename }}</code>, you MUST manually install it into your browser's or operating system's list of trusted certificate authorities.</p>
+                <details><summary><strong>Windows</strong> - Detailed Instructions</summary><div><ol><li><strong>Locate File:</strong> Find <code>{{ ca_cert_filename }}</code>.</li><li><strong>Start Import:</strong> Double-click the <code>.pem</code> file.</li><li><strong>Install:</strong> Click "Install Certificate...".</li><li><strong>Store Location:</strong> Choose "Current User". Click Next.</li><li><strong>Certificate Store:</strong> Select "Place all certificates in the following store". Click "Browse...". Choose "Trusted Root Certification Authorities". Click OK, then Next.</li><li><strong>Confirm:</strong> Click Next, then "Finish".</li><li><strong>Security Warning:</strong> Click "Yes" if prompted.</li><li><strong>Restart Browser.</strong></li></ol></div></details>
+                <details><summary><strong>macOS</strong> - Detailed Instructions</summary><div><ol><li><strong>Locate File.</strong></li><li><strong>Keychain Access:</strong> Double-click <code>.pem</code> file or drag into Keychain Access ("login" keychain).</li><li><strong>Find Certificate:</strong> Find "mitmproxy".</li><li><strong>Set Trust:</strong> Double-click it, expand "Trust", set "When using this certificate:" to "Always Trust".</li><li>Enter password if prompted.</li><li><strong>Restart Browser.</strong></li></ol></div></details>
+                <details><summary><strong>Linux (Debian/Ubuntu based)</strong> - Detailed Instructions</summary><div><ol><li><strong>Locate File.</strong></li><li><strong>Prepare and Copy (Terminal):</strong><br><code>mv {{ ca_cert_filename }} mitmproxy-ca.crt</code><br><code>sudo cp mitmproxy-ca.crt /usr/local/share/ca-certificates/mitmproxy-ca.crt</code></li><li><strong>Update System CA Store:</strong><br><code>sudo update-ca-certificates</code></li><li><strong>Restart Browser.</strong></li></ol></div></details>
+                <details><summary><strong>Firefox (All Platforms)</strong> - Detailed Instructions</summary><div><ol><li><strong>Settings:</strong> Menu > Settings > Privacy & Security.</li><li><strong>Certificates:</strong> Scroll to "Certificates", click "View Certificates...".</li><li><strong>Authorities Tab:</strong> Select "Authorities".</li><li><strong>Import:</strong> Click "Import...", select <code>{{ ca_cert_filename }}</code>.</li><li><strong>Trust Settings:</strong> Check "Trust this CA to identify websites.". Click "OK".</li><li><strong>Restart Firefox.</strong></li></ol></div></details>
+                 <p style="margin-top:15px;"><em><strong style="color:red;">Security Note:</strong> You are installing a Root CA. Only do this for CAs you trust.</em></p>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>HTML Content Rating Keywords (Scores {{RATING_SCALE_MIN}}-{{RATING_SCALE_MAX}})</h2>
+            <div id="keywordsDisplay"><p>Loading keywords...</p></div>
+            <div class="form-group">
+                <h3>Add/Update Keyword</h3>
+                <label for="keywordInput">Keyword (e.g., <code>captcha</code>, <code>login success</code> - case-insensitive):</label>
+                <input type="text" id="keywordInput" placeholder="Enter keyword">
+                <label for="scoreInput">Score ({{RATING_SCALE_MIN}}-{{RATING_SCALE_MAX}}, e.g., <code>0.5</code> for captcha, <code>9.0</code> for login success):</label>
+                <input type="number" id="scoreInput" placeholder="Enter score ({{RATING_SCALE_MIN}}-{{RATING_SCALE_MAX}})" step="0.1" min="{{RATING_SCALE_MIN}}" max="{{RATING_SCALE_MAX}}">
+            </div>
+            <div class="keyword-actions"> <button onclick="addOrUpdateKeyword()">Save Keyword</button> </div>
+            <div class="form-group" style="margin-top: 20px;">
+                <h3>Neutralize Keyword (Set Score to 0)</h3>
+                <label for="neutralizeKeywordInput">Enter keyword to set its score to 0:</label>
+                <input type="text" id="neutralizeKeywordInput" placeholder="Keyword to neutralize">
+                <button class="button-danger" onclick="neutralizeKeyword()">Set Score to 0</button>
+            </div>
+        </div>
+
+        <div class="section" id="dnsBlocklistSection">
+            <h2>DNS Blocklist Management</h2>
+            <p>Currently <strong id="dnsBlocklistCount">{{ dns_blocklist_count }}</strong> domains in the blocklist.
+               The list is primarily managed by an external source and updated on server start.
+               You can add or remove specific domains locally.
+            </p>
+            <button onclick="refreshBlocklist()" class="button-warning">Refresh Blocklist from Source</button>
+            <div class="form-group" style="margin-top: 15px;">
+                <label for="domainInput">Domain (e.g., <code>example.com</code>):</label>
+                <input type="text" id="domainInput" placeholder="Enter domain to add/remove">
+            </div>
+            <button onclick="addBlocklistDomain()">Add Domain</button>
+            <button onclick="removeBlocklistDomain()" class="button-danger">Remove Domain</button>
+
+            <h3>Current Blocklist Sample (First 100 entries - Local View)</h3>
+            <div id="blockListDisplay"><p>Loading blocklist sample...</p></div>
+             <p><small>Note: Changes made here modify a local version of the blocklist. The main proxy uses this local version. Refreshing from source will overwrite the base list but preserve your local additions/removals if implemented in utils.py correctly (e.g., separate user list).</small></p>
+        </div>
+
+        <div class="section">
+            <h2>Live Proxy Log Stream (Newest First - Max {{ MAX_LOG_ENTRIES_UI }} entries)</h2>
+            <div id="logsContainer"><p style="color:#888;">Waiting for logs...</p></div>
+        </div>
+    </div>
+
+    <script>
+        // --- Global JS Variables (same) ---
+        const API_BASE_URL = '';
+        const MAX_LOG_ENTRIES_JS = parseInt("{{ MAX_LOG_ENTRIES_UI }}", 10);
+        let currentMitmproxyStatus = "{{ mitmproxy_status }}";
+        let topSitesChartInstance = null;
+
+        // --- Mitmproxy Control JS (same) ---
+        function updateProxyStatusIndicator(statusText, pid) { /* ... same as your original ... */
+            const indicator = document.getElementById('mitmproxyStatusIndicator');
+            const startButton = document.getElementById('startProxyButton');
+            const stopButton = document.getElementById('stopProxyButton');
+            indicator.textContent = statusText + (pid ? ` (PID: ${pid})` : '');
+            indicator.className = 'status-indicator';
+            if (statusText.toLowerCase().includes('running')) {
+                indicator.classList.add('status-running'); startButton.disabled = true; stopButton.disabled = false;
+            } else if (statusText.toLowerCase().includes('stopped') || statusText.toLowerCase().includes('exited')) {
+                indicator.classList.add('status-stopped'); startButton.disabled = false; stopButton.disabled = true;
+            } else {
+                indicator.classList.add('status-unknown'); startButton.disabled = true; stopButton.disabled = true; // Or some other default
+            }
+        }
+        async function checkProxyStatus() { /* ... same as your original ... */
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/mitmproxy/status`);
+                const data = await response.json();
+                let newStatus = "Error Checking"; let newPid = null;
+                if (response.ok && data.status === 'success') {
+                    newStatus = data.running ? 'Running' : (data.message.includes("exited") ? "Exited" : "Stopped");
+                    newPid = data.pid;
+                } else if (response.ok) { newStatus = data.message || "Unknown Status from API"; }
+                currentMitmproxyStatus = newStatus;
+                updateProxyStatusIndicator(currentMitmproxyStatus, newPid);
+                const caCertSection = document.getElementById('caCertInfo');
+                const downloadButtonExists = caCertSection.querySelector('a[href="/download-ca-certificate"] button');
+                 if (data.running && !downloadButtonExists && !document.querySelector('#caCertInfo .alert-warning button')) { // Avoid reload if warning already shows reload button
+                     // Consider if auto-refresh is desired or if user should manually refresh
+                     // window.location.reload();
+                     console.log("Proxy running. If CA cert was missing, refresh page for download link.");
+                }
+            } catch (error) { console.error('Error checking mitmproxy status:', error); updateProxyStatusIndicator('Network Error Checking Status'); }
+        }
+        async function startProxy() { /* ... same as your original ... */
+            updateProxyStatusIndicator('Starting...', null);
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/mitmproxy/start`, { method: 'POST' });
+                const result = await response.json();
+                addLogToUI({type: response.ok && result.status === 'success' ? 'info' : 'error', source: 'ui_control', message: `Start Proxy: ${result.message}`});
+            } catch (error) { console.error('Client error starting proxy:', error); addLogToUI({type: 'error', source: 'ui_control', message: 'Client-side error sending start command.'});}
+            setTimeout(checkProxyStatus, 2500); // Give mitmproxy time to start/fail
+        }
+        async function stopProxy() { /* ... same as your original ... */
+            updateProxyStatusIndicator('Stopping...', null);
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/mitmproxy/stop`, { method: 'POST' });
+                const result = await response.json();
+                addLogToUI({type: response.ok && result.status === 'success' ? 'info' : 'error', source: 'ui_control', message: `Stop Proxy: ${result.message}`});
+            } catch (error) { console.error('Client error stopping proxy:', error); addLogToUI({type: 'error', source: 'ui_control', message: 'Client-side error sending stop command.'});}
+            setTimeout(checkProxyStatus, 2000);
+        }
+
+        // --- Keywords JS (same) ---
+        async function fetchKeywords() { /* ... same as your original ... */
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/keywords`);
+                if (!response.ok) throw new Error(`Keywords API error! status: ${response.status}`);
+                const keywords = await response.json();
+                const displayDiv = document.getElementById('keywordsDisplay');
+                let html = '<h4>Current Keywords & Scores ({{RATING_SCALE_MIN}}-{{RATING_SCALE_MAX}}):</h4>';
+                if (Object.keys(keywords).length === 0) { html += '<p>No keywords defined yet.</p>'; }
+                else { html += '<ul style="padding-left: 20px;">'; for (const [key, value] of Object.entries(keywords)) { html += `<li><span><strong>${key}:</strong> ${value.toFixed(1)}</span></li>`; } html += '</ul>'; }
+                displayDiv.innerHTML = html;
+            } catch (error) { console.error('Error fetching keywords:', error); document.getElementById('keywordsDisplay').innerHTML = '<p style="color:red;">Error loading keywords.</p>';}
+        }
+        async function addOrUpdateKeyword() { /* ... same as your original ... */
+            const keyword = document.getElementById('keywordInput').value.trim().toLowerCase();
+            const scoreInput = document.getElementById('scoreInput').value;
+            if (!keyword) { addLogToUI({type:'warning', source:'ui_keywords', message:'Keyword cannot be empty.'}); return; }
+            if (scoreInput === '') { addLogToUI({type:'warning', source:'ui_keywords', message:'Score cannot be empty.'}); return; }
+            const score = parseFloat(scoreInput);
+            if (isNaN(score)) { addLogToUI({type:'warning', source:'ui_keywords', message:'Score must be a valid number.'}); return; }
+            const minScale = parseFloat("{{RATING_SCALE_MIN}}"); const maxScale = parseFloat("{{RATING_SCALE_MAX}}");
+            if (score < minScale || score > maxScale) {
+                 addLogToUI({type:'warning', source:'ui_keywords', message:`Score must be between ${minScale} and ${maxScale}.`}); return;
+            }
+            try {
+                const payload = { [keyword]: score };
+                const response = await fetch(`${API_BASE_URL}/api/keywords`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)});
+                const result = await response.json();
+                addLogToUI({type: response.ok && result.status === 'success' ? 'info' : 'error', source:'ui_keywords', message: `Keyword update for '${keyword}': ${result.message}`});
+                if (result.status === 'success') { fetchKeywords(); document.getElementById('keywordInput').value = ''; document.getElementById('scoreInput').value = '';}
+            } catch (e) { console.error(e); addLogToUI({type:'error', source:'ui_keywords', message:`Client error updating keyword: ${e.message}`});}
+        }
+        async function neutralizeKeyword() { /* ... same as your original ... */
+             const keywordToNeutralize = document.getElementById('neutralizeKeywordInput').value.trim().toLowerCase();
+            if (!keywordToNeutralize) { addLogToUI({type:'warning', source:'ui_keywords', message:'Keyword to neutralize cannot be empty.'}); return; }
+            try {
+                const payload = { [keywordToNeutralize]: 0.0 }; // Neutral score
+                const response = await fetch(`${API_BASE_URL}/api/keywords`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)});
+                const result = await response.json();
+                addLogToUI({type: response.ok && result.status === 'success' ? 'info' : 'error', source:'ui_keywords', message: `Keyword '${keywordToNeutralize}' neutralized: ${result.message}`});
+                if (result.status === 'success') { fetchKeywords(); document.getElementById('neutralizeKeywordInput').value = '';}
+            } catch (e) { console.error(e); addLogToUI({type:'error', source:'ui_keywords', message:`Client error neutralizing keyword: ${e.message}`});}
+        }
+
+
+        // --- Logs JS (same) ---
+        const logsContainer = document.getElementById('logsContainer');
+        /* ... same as your original ... */
+        let isAutoScrollLogs = false; // Initialize to false
+        if(logsContainer) {
+            logsContainer.addEventListener('scroll', () => {
+                isAutoScrollLogs = logsContainer.scrollHeight - logsContainer.scrollTop <= logsContainer.clientHeight + 50; // Check if near bottom
+            });
+        }
+        function addLogToUI(logEntryData) {
+            const logsContainer = document.getElementById('logsContainer'); if (!logsContainer) return;
+            const firstChild = logsContainer.firstChild;
+            if (firstChild && firstChild.nodeType === Node.ELEMENT_NODE && firstChild.tagName === 'P' && (firstChild.textContent.includes("Waiting for logs...") || firstChild.textContent.includes("No logs yet."))) {
+                logsContainer.innerHTML = ''; // Clear placeholder
+            }
+            const entryElement = formatLogEntry(logEntryData);
+            const shouldScroll = isAutoScrollLogs || logsContainer.children.length < 10; // Auto-scroll if few logs or already at bottom
+
+            logsContainer.insertBefore(entryElement, logsContainer.firstChild); // Add to top (newest first)
+
+            while (logsContainer.children.length > MAX_LOG_ENTRIES_JS) {
+                logsContainer.removeChild(logsContainer.lastChild);
+            }
+            // if (shouldScroll) { logsContainer.scrollTop = 0; } // Scroll to top if adding to top
+        }
+         function formatLogEntry(log) {
+            const entryDiv = document.createElement('div');
+            const typeClass = (log.type || 'unknown').toString().replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+            entryDiv.classList.add('log-entry', `log-${typeClass}`);
+
+            let originalTimestamp = log.timestamp ? new Date(log.timestamp * 1000).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 2 }) : "N/A";
+            let source = log.source || "unknown";
+            let detailsHTML = '';
+
+            if (log.details) {
+                if (log.details.url) detailsHTML += `<div><small>URL: ${escapeHtml(log.details.url)}</small></div>`;
+                if (log.details.method) detailsHTML += `<small>Method: ${escapeHtml(log.details.method)} | </small>`;
+                if (log.details.status) detailsHTML += `<small>Status: ${escapeHtml(String(log.details.status))} | </small>`;
+                if (log.details.rating !== undefined) detailsHTML += `<small>Rating: ${typeof log.details.rating === 'number' ? log.details.rating.toFixed(1) : escapeHtml(String(log.details.rating))} | </small>`;
+                if (log.details.duration_ms !== undefined) detailsHTML += `<small>Time: ${escapeHtml(String(log.details.duration_ms))}ms | </small>`;
+                if (log.details.error) detailsHTML += `<div style="color:#ffc4c4;"><small>Error Detail: ${escapeHtml(log.details.error)}</small></div>`;
+            }
+
+            let content = `<div class="log-meta"><span>${escapeHtml(originalTimestamp)}</span> | Type: <strong>${escapeHtml(log.type || 'N/A')}</strong> | Src: ${escapeHtml(source)}${log.details && log.details.flow_id ? ` | Flow: ${escapeHtml(log.details.flow_id)}` : ''}</div>`;
+
+            const tempDivMsg = document.createElement('div'); tempDivMsg.textContent = log.message || ""; // Safely set text content first
+            if (tempDivMsg.textContent) { // Check if there is a message after setting textContent
+                 let msgClass = '';
+                 if (log.type === 'error' || (log.source && log.source.includes('error'))) msgClass = 'log-error-message';
+                 else if (log.type === 'warning' || (log.source && source.includes('warning'))) msgClass = 'log-warning-message';
+                 content += `<div class="log-message ${msgClass}">${tempDivMsg.innerHTML}</div>`; // Use innerHTML of the tempDiv to get escaped version
+            }
+            if(detailsHTML) content += `<div class="log-entry-details">${detailsHTML}</div>`; // detailsHTML is already escaped
+            entryDiv.innerHTML = content;
+            return entryDiv;
+        }
+        async function fetchLogs() { /* ... same as your original ... */
+            if(!logsContainer) return;
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/logs`);
+                if (!response.ok) { console.error(`HTTP error fetching logs! status: ${response.status}`); return; }
+                const logs = await response.json();
+
+                const firstChild = logsContainer.firstChild;
+                 if (firstChild && firstChild.nodeType === Node.ELEMENT_NODE && firstChild.tagName === 'P' && (firstChild.textContent.includes("Waiting for logs...") || firstChild.textContent.includes("No logs yet."))) {
+                    logsContainer.innerHTML = ''; // Clear placeholder only if it's the only thing there or first.
+                }
+
+                logsContainer.innerHTML = ''; // Clear all existing logs to re-render
+                if (logs && logs.length > 0) {
+                    logs.slice(0, MAX_LOG_ENTRIES_JS).forEach(log => {
+                        logsContainer.appendChild(formatLogEntry(log)); // Append, formatLogEntry adds to top internally
+                    });
+                } else if (logsContainer.children.length === 0) { // Check if still empty after potential clear
+                    logsContainer.innerHTML = '<p style="color:#888;">No logs yet.</p>';
+                }
+            } catch (error) { console.error('Error fetching logs:', error); }
+        }
+
+
+        // --- Charting JS (same) ---
+        async function fetchTopSitesStats() { /* ... same as your original ... */
+            const statsMessageEl = document.getElementById('statsMessage');
+            statsMessageEl.textContent = 'Loading stats...';
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/stats/top_sites`);
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => ({error: "Failed to parse error from stats API"}));
+                    throw new Error(`Stats API error ${response.status}: ${errData.error || "Unknown error"}`);
+                }
+                const data = await response.json();
+
+                if (data.error) {
+                    statsMessageEl.textContent = `Error loading stats: ${data.error}`;
+                    addLogToUI({type: 'error', source: 'ui_stats', message: `Error from /api/stats/top_sites: ${data.error}`});
+                    return;
+                }
+                if (!data.labels || data.labels.length === 0) {
+                    statsMessageEl.textContent = data.message || 'No site data available for charting yet.';
+                    if (topSitesChartInstance) { topSitesChartInstance.destroy(); topSitesChartInstance = null; }
+                    return;
+                }
+                statsMessageEl.textContent = '';
+
+                const ctx = document.getElementById('topSitesChart').getContext('2d');
+                if (topSitesChartInstance) { topSitesChartInstance.destroy(); }
+                topSitesChartInstance = new Chart(ctx, {
+                    type: 'bar',
+                    data: { labels: data.labels, datasets: data.datasets.map(ds => ({ ...ds, barPercentage: 0.7, categoryPercentage: 0.8 })) },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        scales: { y: { beginAtZero: true, suggestedMax: parseFloat("{{RATING_SCALE_MAX}}"), title: { display: true, text: 'Score (0-10)' } },
+                                  x: { title: { display: true, text: 'Top 5 Requested Domains' } } },
+                        plugins: { legend: { position: 'top' }, title: { display: true, text: 'Site Request Score Analysis (Avg, Best, Lowest)' } }
+                    }
+                });
+                addLogToUI({type: 'info', source: 'ui_stats', message: 'Top sites chart updated.'});
+            } catch (error) {
+                console.error('Error fetching or rendering top sites stats:', error);
+                statsMessageEl.textContent = `Error: ${error.message}`;
+                addLogToUI({type: 'error', source: 'ui_stats', message: `Client error fetching/rendering stats: ${error.message}`});
+            }
+        }
+
+        // --- NEW: DNS Blocklist JS ---
+        async function fetchBlocklistSample() {
+            const displayDiv = document.getElementById('blockListDisplay');
+            displayDiv.innerHTML = '<p>Loading blocklist sample...</p>';
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/blocklist`);
+                const data = await response.json();
+                if (response.ok && data.status === 'success') {
+                    document.getElementById('dnsBlocklistCount').textContent = data.count;
+                    if (data.entries_sample && data.entries_sample.length > 0) {
+                        let html = '<ul>';
+                        data.entries_sample.forEach(domain => {
+                            html += `<li><span>${escapeHtml(domain)}</span> <button onclick="removeBlocklistDomain('${escapeHtml(domain)}')">Remove</button></li>`;
+                        });
+                        html += '</ul>';
+                        displayDiv.innerHTML = html;
+                    } else {
+                        displayDiv.innerHTML = '<p>Blocklist is empty or no sample available.</p>';
+                    }
+                } else {
+                    displayDiv.innerHTML = `<p style="color:red;">Error: ${data.message || 'Could not load blocklist sample.'}</p>`;
+                }
+            } catch (error) {
+                console.error('Error fetching blocklist sample:', error);
+                displayDiv.innerHTML = '<p style="color:red;">Client error fetching blocklist sample.</p>';
+            }
+        }
+
+        async function addBlocklistDomain(domainFromClick = null) {
+            const domain = domainFromClick || document.getElementById('domainInput').value.trim().toLowerCase();
+            if (!domain) {
+                addLogToUI({type:'warning', source:'ui_blocklist', message:'Domain cannot be empty.'});
+                return;
+            }
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/blocklist/add`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain: domain })
+                });
+                const result = await response.json();
+                addLogToUI({type: response.ok && result.status === 'success' ? 'info' : 'error', source:'ui_blocklist', message: `Add '${domain}': ${result.message}`});
+                if (response.ok && result.status === 'success') {
+                    document.getElementById('domainInput').value = '';
+                    fetchBlocklistSample(); // Refresh display
+                }
+            } catch (e) {
+                console.error(e);
+                addLogToUI({type:'error', source:'ui_blocklist', message:`Client error adding domain: ${e.message}`});
+            }
+        }
+
+        async function removeBlocklistDomain(domainFromClick = null) {
+            const domain = domainFromClick || document.getElementById('domainInput').value.trim().toLowerCase();
+            if (!domain) {
+                addLogToUI({type:'warning', source:'ui_blocklist', message:'Domain to remove cannot be empty.'});
+                return;
+            }
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/blocklist/remove`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain: domain })
+                });
+                const result = await response.json();
+                addLogToUI({type: response.ok && result.status === 'success' ? 'info' : 'error', source:'ui_blocklist', message: `Remove '${domain}': ${result.message}`});
+                if (response.ok && result.status === 'success') {
+                    document.getElementById('domainInput').value = '';
+                    fetchBlocklistSample(); // Refresh display
+                }
+            } catch (e) {
+                console.error(e);
+                addLogToUI({type:'error', source:'ui_blocklist', message:`Client error removing domain: ${e.message}`});
+            }
+        }
+        async function refreshBlocklist() {
+            addLogToUI({type: 'info', source: 'ui_blocklist', message: 'Attempting to refresh blocklist from source...'});
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/blocklist/refresh`, { method: 'POST'});
+                const result = await response.json();
+                addLogToUI({type: response.ok && result.status === 'success' ? 'info' : 'error', source:'ui_blocklist', message: `Blocklist refresh: ${result.message}`});
+                if (response.ok && result.status === 'success') {
+                    document.getElementById('dnsBlocklistCount').textContent = result.count;
+                    fetchBlocklistSample();
+                }
+            } catch (e) {
+                console.error(e);
+                addLogToUI({type:'error', source:'ui_blocklist', message:`Client error refreshing blocklist: ${e.message}`});
+            }
+        }
+
+        function escapeHtml(unsafe) {
+            if (typeof unsafe !== 'string') {
+                if (unsafe === null || typeof unsafe === 'undefined') return '';
+                try { unsafe = String(unsafe); } catch (e) { return ''; }
+            }
+            return unsafe
+                 .replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;")
+                 .replace(/"/g, "&quot;")
+                 .replace(/'/g, "&#039;");
+        }
+
+
+        document.addEventListener('DOMContentLoaded', () => {
+            updateProxyStatusIndicator(currentMitmproxyStatus, null);
+            fetchKeywords();
+            fetchLogs();
+            fetchTopSitesStats();
+            fetchBlocklistSample(); // Fetch blocklist on load
+
+            setInterval(fetchLogs, 2000);
+            setInterval(checkProxyStatus, 3000);
+        });
+    </script>
+</body>
+</html>

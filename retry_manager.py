@@ -1,226 +1,226 @@
 # retry_manager.py
-
-# retry_manager.py
 import time
 import logging
 import random
 import pandas as pd
-from typing import Dict, Optional, List, Tuple
-from dataclasses import dataclass, asdict, field
-from datetime import datetime, timedelta
-from model import ModelManager
-from config import NUM_RETRIES
+from typing import Dict, Optional, List, Any
+from mitmproxy import http # For type hinting flow
+
+from model import ModelManager # To get successful patterns
+from request_features import RequestFeaturesModel # To get training data for pattern generation
+from config import NUM_RETRIES, RETRY_THRESHOLD_RATING # RETRY_THRESHOLD_RATING might not be used here directly
+
 logger = logging.getLogger(__name__)
 
-@dataclass
-class RetryRequest:
-    """Data class for retry request information"""
-    flow_id: str
-    url: str
-    method: str
-    headers: Dict
-    content: Optional[bytes]
-    attempt_count: int
-    next_retry_time: float
-    last_error: Optional[str] = None
-    optimization_attempts: int = 0
-    optimized_features: Dict = None
+# RetryRequest dataclass would be beneficial here if not already defined elsewhere
+# For simplicity, using Dicts for now.
+# from dataclasses import dataclass
+# @dataclass
+# class RetryJob:
+#     flow_id: str
+#     original_flow: http.HTTPFlow # Store the original flow for replaying/modifying
+#     url: str
+#     method: str
+#     headers: Dict[str, str] # Original headers
+#     content: Optional[bytes]
+#     attempt_count: int
+#     next_retry_time: float # Unix timestamp
+#     last_error: Optional[str] = None
+#     # current_optimized_headers: Optional[Dict[str, str]] = None
+
 
 class RetryManager:
-    def __init__(self, max_retries: int = NUM_RETRIES, initial_delay: int = 5):
-        """Initialize the retry manager"""
+    def __init__(self, model_manager: ModelManager, training_data_provider: RequestFeaturesModel, max_retries: int = NUM_RETRIES, initial_delay_s: int = 5):
+        self.model_manager = model_manager
+        self.training_data_provider = training_data_provider # To get data for pattern analysis
         self.max_retries = max_retries
-        self.initial_delay = initial_delay
-        self.retry_queue: Dict[str, RetryRequest] = {}
-        self.model_manager = ModelManager()
-        logger.info("RetryManager initialized")
+        self.initial_delay_s = initial_delay_s
+        self.retry_queue: Dict[str, Dict[str, Any]] = {} # flow.id -> retry_job_dict
+        logger.info(f"RetryManager initialized. Max retries: {self.max_retries}, Initial delay: {self.initial_delay_s}s.")
 
-    def optimize_request_features(self, retry_request: RetryRequest) -> Dict:
-        """Generate optimized features for retry attempt"""
+    def add_failed_request(self, flow: http.HTTPFlow) -> None:
+        """Adds a failed request (based on low rating or error) to the retry queue."""
+        if flow.id in self.retry_queue:
+            logger.debug(f"Request {flow.id} for {flow.request.url} already in retry queue. Skipping.")
+            return
+
+        # Check if max retries for this original request have already been attempted
+        # This needs more sophisticated tracking if flows are re-issued with new IDs by mitmproxy's replay mechanism.
+        # For now, assuming flow.id is unique enough for initial add.
+
         try:
-            # Get successful request patterns from model
-            patterns = self.model_manager.get_successful_patterns()
-            
-            # Use default optimizations if no patterns available
-            if patterns is None or patterns.empty:
-                logger.info("Using default optimizations (no patterns available)")
-                return self._get_default_optimizations(retry_request)
+            # Convert mitmproxy headers (Fields) to a simple dict of str:str
+            original_headers = {k.decode('utf-8', 'ignore'): v.decode('utf-8', 'ignore') 
+                                for k, v in flow.request.headers.fields}
 
-            # Select optimization strategy based on attempt count
-            if retry_request.optimization_attempts == 0:
-                try:
-                    # First attempt: Use most successful pattern
-                    pattern_dict = patterns.iloc[0].to_dict()
-                    # Clean the pattern dictionary
-                    optimized = {k: str(v) for k, v in pattern_dict.items() if v is not None}
-                    logger.info("Using most successful pattern")
-                except Exception as e:
-                    logger.error(f"Error using most successful pattern: {e}")
-                    return self._get_default_optimizations(retry_request)
+            retry_job = {
+                "flow_id": flow.id, # Original flow ID for tracking
+                "original_url": flow.request.url,
+                "original_method": flow.request.method,
+                "original_headers": original_headers,
+                "original_content": flow.request.content, # Content as bytes
+                "attempt_count": 0, # This will be the first retry attempt when processed
+                "next_retry_time": self._calculate_next_retry_time(0),
+                "last_status_code": flow.response.status_code if flow.response else None,
+                "last_error_message": str(flow.error) if flow.error else None,
+                "optimization_attempts": 0, # How many times we tried different optimization strategies
+            }
+            
+            # Initial optimization for the first retry attempt
+            # retry_job["current_optimized_headers"] = self.generate_optimized_headers(retry_job)
+
+            self.retry_queue[flow.id] = retry_job
+            logger.info(f"Added request {flow.id} for {flow.request.url} to retry queue. Next attempt around {time.ctime(retry_job['next_retry_time'])}.")
+
+        except Exception as e:
+            logger.error(f"Error adding request {flow.id} ({flow.request.url}) to retry queue: {e}", exc_info=True)
+
+    def _calculate_next_retry_time(self, attempt_num: int) -> float:
+        """Calculates next retry time with exponential backoff and jitter."""
+        delay = self.initial_delay_s * (2 ** attempt_num)
+        jitter = random.uniform(0, delay * 0.1) # Add up to 10% jitter
+        return time.time() + delay + jitter
+
+    def generate_optimized_headers(self, retry_job: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Generates a new set of headers for the next retry attempt.
+        Uses ModelManager to get high-quality patterns.
+        """
+        # Fallback to original headers if no optimization is found
+        optimized_headers = retry_job["original_headers"].copy() 
+        
+        try:
+            # Get current training data from the provider
+            training_df = self.training_data_provider.get_training_data_for_model()
+            if training_df.empty:
+                logger.warning("Training data is empty, cannot generate model-based optimized headers. Using defaults/original.")
             else:
-                # Subsequent attempts: Try different patterns or variations
-                optimized = self._generate_variant_features(patterns, retry_request)
-                logger.info(f"Generated variant features for attempt {retry_request.optimization_attempts}")
+                # Get high-quality patterns from ModelManager
+                # top_n can be adjusted, or try different patterns each optimization attempt
+                # The number of patterns to try depends on retry_job["optimization_attempts"]
+                num_patterns_to_consider = 5 + retry_job["optimization_attempts"]
+                high_quality_patterns = self.model_manager.get_high_quality_request_patterns(training_df, top_n=num_patterns_to_consider)
 
-            # Update optimization attempt counter
-            retry_request.optimization_attempts += 1
-            
-            return optimized
+                if high_quality_patterns:
+                    # Strategy: try a different pattern from the top list for each optimization attempt
+                    pattern_index = retry_job["optimization_attempts"] % len(high_quality_patterns)
+                    chosen_pattern_dict = high_quality_patterns[pattern_index]
+                    
+                    logger.info(f"Attempting optimization with pattern {pattern_index+1}/{len(high_quality_patterns)}: {chosen_pattern_dict}")
 
-        except Exception as e:
-            logger.error(f"Error optimizing request features: {e}", exc_info=True)
-            return self._get_default_optimizations(retry_request)
-
-    def _generate_variant_features(self, patterns: pd.DataFrame, retry_request: RetryRequest) -> Dict:
-        """Generate variant features based on successful patterns"""
-        try:
-            # Features we can safely modify
-            mutable_features = [
-                'user_agent',
-                'accept_language',
-                'accept_encoding',
-                'cache_control',
-                'connection'
-            ]
-
-            # Base features from current request
-            variant = retry_request.headers.copy()
-
-            # Select a random successful pattern
-            pattern = patterns.sample(n=1).iloc[0]
-
-            # Randomly select features to modify
-            num_features_to_modify = random.randint(1, len(mutable_features))
-            features_to_modify = random.sample(mutable_features, num_features_to_modify)
-
-            # Apply modifications
-            for feature in features_to_modify:
-                if feature in pattern and pattern[feature] is not None:
-                    variant[feature] = pattern[feature]
-
-            return variant
-
-        except Exception as e:
-            logger.error(f"Error generating variant features: {e}")
-            return retry_request.headers.copy()
-
-    def _get_default_optimizations(self, retry_request: RetryRequest) -> Dict:
-        """Get default optimization features when no patterns are available"""
-        default_optimizations = {
-            'User-Agent': [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-            ],
-            'Accept-Language': ['en-US,en;q=0.9', 'en-GB,en;q=0.8'],
-            'Accept-Encoding': ['gzip, deflate, br', 'gzip, deflate'],
-            'Cache-Control': ['no-cache', 'max-age=0'],
-            'Connection': ['keep-alive', 'close']
-        }
-
-        # Create variant based on attempt number
-        variant = retry_request.headers.copy()
-        attempt = retry_request.optimization_attempts
-
-        for header, values in default_optimizations.items():
-            variant[header] = values[attempt % len(values)]
-
-        return variant
-
-    def add_failed_request(self, flow) -> None:
-        """Add a failed request to the retry queue"""
-        try:
-            # Skip if request is already in retry queue
-            if flow.id in self.retry_queue:
-                return
-
-            retry_request = RetryRequest(
-                flow_id=flow.id,
-                url=flow.request.url,
-                method=flow.request.method,
-                headers=dict(flow.request.headers),
-                content=flow.request.content,
-                attempt_count=0,
-                next_retry_time=self._calculate_next_retry_time(0)
-            )
-            
-            # Generate optimized features for first attempt
-            retry_request.optimized_features = self.optimize_request_features(retry_request)
-            
-            self.retry_queue[flow.id] = retry_request
-            logger.info(f"Added request to retry queue: {flow.request.url}")
-            
-        except Exception as e:
-            logger.error(f"Error adding request to retry queue: {e}")
-
-    def update_retry_status(self, flow_id: str, success: bool, error: Optional[str] = None) -> None:
-        """Update the status of a retry attempt and optimize if needed"""
-        try:
-            if flow_id not in self.retry_queue:
-                return
-
-            retry_request = self.retry_queue[flow_id]
-            
-            if success:
-                # If successful, record the successful features
-                self.model_manager.record_successful_features(
-                    retry_request.optimized_features
-                )
-                del self.retry_queue[flow_id]
-                logger.info(f"Successful retry for request: {flow_id}")
-            else:
-                retry_request.attempt_count += 1
-                retry_request.last_error = error
-
-                if retry_request.attempt_count < self.max_retries:
-                    # Generate new optimized features for next attempt
-                    retry_request.optimized_features = self.optimize_request_features(
-                        retry_request
-                    )
-                    retry_request.next_retry_time = self._calculate_next_retry_time(
-                        retry_request.attempt_count
-                    )
-                    logger.warning(
-                        f"Failed retry attempt {retry_request.attempt_count} for request: {flow_id}. "
-                        f"Next attempt with optimized features."
-                    )
+                    # Merge/replace original headers with those from the chosen pattern
+                    # Be careful about case-sensitivity if the target server is picky.
+                    # Store headers as str:str.
+                    for key, value in chosen_pattern_dict.items():
+                        # Ensure key is a string (it should be from get_high_quality_request_patterns)
+                        # and value is also a string.
+                        optimized_headers[str(key)] = str(value)
+                    
+                    # Specific common headers to prioritize from pattern if available
+                    # Example: User-Agent is often critical
+                    if 'user_agent' in chosen_pattern_dict and chosen_pattern_dict['user_agent']:
+                        optimized_headers['User-Agent'] = str(chosen_pattern_dict['user_agent'])
+                    if 'accept_language' in chosen_pattern_dict and chosen_pattern_dict['accept_language']:
+                        optimized_headers['Accept-Language'] = str(chosen_pattern_dict['accept_language'])
+                    
+                    logger.info(f"Generated optimized headers for {retry_job['original_url']}: {optimized_headers}")
+                    retry_job["optimization_attempts"] += 1
+                    return optimized_headers
                 else:
-                    del self.retry_queue[flow_id]
-                    logger.warning(f"Max retries reached for request: {flow_id}")
+                    logger.info("No high-quality patterns found from model. Trying default optimizations.")
+
+            # Fallback to default optimizations if model provides no patterns
+            # This can be a predefined list of common "good" headers
+            default_uas = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Version/14.0.3 Safari/537.36",
+            ]
+            optimized_headers['User-Agent'] = random.choice(default_uas)
+            optimized_headers['Accept'] = "*/*"
+            optimized_headers['Accept-Language'] = "en-US,en;q=0.9"
+            # Remove potentially problematic headers for retries
+            for problematic_header in ["If-None-Match", "If-Modified-Since", "Etag"]:
+                optimized_headers.pop(problematic_header, None)
+            
+            logger.info(f"Applied default header optimizations for {retry_job['original_url']}.")
+            retry_job["optimization_attempts"] += 1 # Count this as an optimization attempt too
 
         except Exception as e:
-            logger.error(f"Error updating retry status: {e}")
+            logger.error(f"Error generating optimized headers for {retry_job['original_url']}: {e}", exc_info=True)
+            # Fallback to original headers on error
+            return retry_job["original_headers"].copy()
+        
+        return optimized_headers
 
-    def _calculate_next_retry_time(self, attempt_count: int) -> float:
-        """Calculate next retry time using exponential backoff"""
-        delay = self.initial_delay * (2 ** attempt_count)  # Exponential backoff
-        return time.time() + delay
 
-    def get_ready_retries(self) -> List[RetryRequest]:
-        """Get list of requests ready for retry with optimized features"""
-        try:
-            current_time = time.time()
-            ready_retries = []
-            expired_retries = []
+    def get_requests_to_retry(self) -> List[Dict[str, Any]]:
+        """
+        Gets requests from the queue that are ready for a retry attempt.
+        This method would be called periodically by the main proxy logic (e.g., in a tick handler if mitmproxy supported it,
+        or a separate thread, or just before processing new requests).
+        For now, it's designed to be called, and it returns a list of flows to be replayed.
+        """
+        ready_for_retry = []
+        current_time = time.time()
+        flow_ids_to_remove = []
 
-            for flow_id, retry_request in self.retry_queue.items():
-                if retry_request.attempt_count >= self.max_retries:
-                    expired_retries.append(flow_id)
-                    continue
+        for flow_id, job in list(self.retry_queue.items()): # Iterate over a copy for safe removal
+            if job["attempt_count"] >= self.max_retries:
+                logger.warning(f"Max retries ({self.max_retries}) reached for {job['original_url']} (ID: {flow_id}). Removing from queue.")
+                flow_ids_to_remove.append(flow_id)
+                continue
 
-                if current_time >= retry_request.next_retry_time:
-                    if not retry_request.optimized_features:
-                        retry_request.optimized_features = self.optimize_request_features(
-                            retry_request
-                        )
-                    ready_retries.append(retry_request)
-
-            # Clean up expired retries
-            for flow_id in expired_retries:
+            if current_time >= job["next_retry_time"]:
+                job["attempt_count"] += 1
+                # Generate new set of optimized headers for this attempt
+                job["current_optimized_headers"] = self.generate_optimized_headers(job)
+                
+                logger.info(f"Request {job['original_url']} (ID: {flow_id}) is ready for retry attempt #{job['attempt_count']}.")
+                ready_for_retry.append(job) # Add the whole job dict
+                # The job remains in queue until success or max_retries; only next_retry_time is updated upon failure.
+            
+        for flow_id in flow_ids_to_remove:
+            if flow_id in self.retry_queue:
                 del self.retry_queue[flow_id]
-                logger.info(f"Removed expired retry request: {flow_id}")
+        
+        return ready_for_retry
 
-            return ready_retries
+    def update_retry_outcome(self, original_flow_id: str, success: bool, new_flow: Optional[http.HTTPFlow] = None) -> None:
+        """
+        Updates the status of a retry attempt.
+        If successful, removes from queue. If failed, schedules next retry or removes if maxed out.
+        """
+        if original_flow_id not in self.retry_queue:
+            logger.warning(f"Original flow ID {original_flow_id} not found in retry queue for outcome update.")
+            return
 
-        except Exception as e:
-            logger.error(f"Error getting ready retries: {e}")
-            return []
+        job = self.retry_queue[original_flow_id]
+
+        if success:
+            logger.info(f"Retry attempt #{job['attempt_count']} for {job['original_url']} (ID: {original_flow_id}) was SUCCESSFUL. Removing from queue.")
+            # Potentially log the successful optimized_headers to the model via request_features_manager
+            # This requires the main loop to collect features from the *successful retry flow* (new_flow)
+            # and associate them with the fact that these headers worked.
+            # For now, model learns from all traffic, including successful retries processed by main.response.
+            del self.retry_queue[original_flow_id]
+        else:
+            job["last_status_code"] = new_flow.response.status_code if new_flow and new_flow.response else None
+            job["last_error_message"] = str(new_flow.error) if new_flow and new_flow.error else "Retry failed, unknown error or low rating."
+            
+            if job["attempt_count"] < self.max_retries:
+                job["next_retry_time"] = self._calculate_next_retry_time(job["attempt_count"])
+                logger.warning(
+                    f"Retry attempt #{job['attempt_count']} for {job['original_url']} (ID: {original_flow_id}) FAILED. "
+                    f"Status: {job['last_status_code']}, Error: {job['last_error_message']}. "
+                    f"Next attempt around {time.ctime(job['next_retry_time'])}."
+                )
+            else: # Max retries reached on this failure
+                logger.error(
+                    f"Max retries ({self.max_retries}) reached for {job['original_url']} (ID: {original_flow_id}) after FAILED attempt #{job['attempt_count']}. "
+                    f"Final Status: {job['last_status_code']}, Error: {job['last_error_message']}. Removing from queue."
+                )
+                del self.retry_queue[original_flow_id]
+
+    # Note: The actual replaying of requests (creating a new flow with modified headers)
+    # needs to be handled by the main proxy script using mitmproxy's `ctx.master.commands.call("replay.client", [flow_to_replay])`
+    # or similar mechanism. This RetryManager prepares the *data* for the retry.

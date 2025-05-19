@@ -1,0 +1,8 @@
+mitmproxy>=10.0.0 # Or your specific mitmproxy version
+Flask>=2.0.0
+pandas>=1.0.0
+scikit-learn>=1.0.0
+numpy>=1.18.0
+joblib>=1.0.0
+beautifulsoup4>=4.0.0
+requests>=2.20.0 # For potential future use in sending logs from main.py
